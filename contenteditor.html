@@ -1,0 +1,1432 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>web editor by contenteditable</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        box-sizing: border-box;
+      }
+      .red {
+        color: red;
+      }
+
+      #editor-area {
+        height: 800px;
+        width: 1000px;
+        position: relative;
+        /* 設定每行的高度 */
+        line-height: 20px;
+      }
+
+      #my-editor {
+        background: rgb(30, 30, 30);
+        color: #fffffe;
+        font-size: 15px;
+        font-family: "Courier New", Courier, monospace;
+        overflow: auto;
+        width: 100%;
+        height: 100%;
+        white-space: nowrap;
+        /* 初始化counter */
+        counter-reset: lineNum;
+      }
+      /* 設定行號pseudo element */
+      #my-editor > div::before {
+        counter-increment: lineNum;
+        content: counter(lineNum);
+        border-right: white 1px solid;
+        display: inline-block;
+        width: 2em;
+        padding-left: 0.5em;
+        padding-right: 1em;
+        margin-right: 1em;
+        color: #888;
+        text-align: right;
+      }
+
+      #my-editor::selection {
+        background-color: rgb(130, 177, 223);
+      }
+
+      #my-editor div {
+        /* set size of tab key to 4 white spaces */
+        -moz-tab-size: 4;
+        -o-tab-size: 4;
+        tab-size: 4;
+      }
+
+      #my-editor span {
+        font-family: "Courier New", Courier, monospace;
+        font-size: 15px;
+      }
+      /* 編輯器關鍵字的顏色 */
+      .instructionWord {
+        color: #2c7ad9;
+        font-weight: bold;
+      }
+      .typeWord {
+        color: #4ec98f;
+      }
+      .stringWord {
+        color: #c39178;
+      }
+      .numberWord {
+        color: #93ceab;
+      }
+
+      /* editor overlay style */
+      #overlay-editor-layer {
+        overflow: hidden;
+        position: absolute;
+        pointer-events: none;
+        width: 100%;
+        height: 100%;
+      }
+
+      #overlay-editor-layer > div {
+        background-color: rgba(255, 255, 255, 0.301);
+        width: 100%;
+        position: absolute;
+        pointer-events: none;
+      }
+
+      /* 搜尋框 */
+      #search-bar {
+        background: #252526;
+        padding: 5px 10px;
+        width: fit-content;
+        position: absolute;
+        top: 0;
+        right: 30px;
+        box-shadow: 2px 2px 5px 2px rgba(0, 0, 0, 0.363);
+        display: none;
+      }
+      #search-bar > .input-field {
+        background: #3c3c3c;
+        width: 200px;
+        height: 20px;
+        color: rgb(223, 223, 223);
+        padding: 2px 4px;
+        display: inline-block;
+      }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.4.1/jquery.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/webfont/1.6.26/webfont.js"></script>
+    <script src="./htmlencode.js"></script>
+    <script>
+      WebFont.load({
+        google: {
+          families: ["Courier New"]
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <div style="position: relative;width: fit-content;margin: 40px 30px;">
+      <div id="editor-area">
+        <div id="overlay-editor-layer"></div>
+        <div id="my-editor" spellcheck="false" contenteditable="true"></div>
+      </div>
+      <div id="search-bar">
+        <div
+          id="search-input-field"
+          class="input-field"
+          contenteditable="true"
+        ></div>
+        <button id="previous-search-btn" onclick="toPreviousSearchWord()">
+          上一個
+        </button>
+        <button id="next-search-btn" onclick="toNextSearchWord()">
+          下一個
+        </button>
+        <button id="close-search-btn" onclick="closeSearchField()">關閉</button>
+      </div>
+    </div>
+
+    <script>
+      /**
+       * A simple wrapper for system fonts to provide
+       * @param {String} family Font Family (same as in CSS)
+       * @param {Number} size Size in px
+       * @constructor
+       */
+      var FontMetrics = function(family, size) {
+        this._family = family || (family = "Courier New, Courier, monospace");
+        this._size = parseInt(size) || (size = 12);
+
+        // Preparing container
+        var line = document.createElement("div"),
+          body = document.body;
+        line.style.position = "absolute";
+        line.style.whiteSpace = "nowrap";
+        line.style.font = size + "px " + family;
+        body.appendChild(line);
+
+        // Now we can measure width and height of the letter
+        var text = "mmmmmmmmmm";
+        line.innerHTML = text;
+        this._width = line.offsetWidth / text.length;
+        this._height = line.offsetHeight;
+
+        // Now creating 1px sized item that will be aligned to baseline
+        // to calculate baseline shift
+        var span = document.createElement("span");
+        span.style.display = "inline-block";
+        span.style.overflow = "hidden";
+        span.style.width = "1px";
+        span.style.height = "1px";
+        line.appendChild(span);
+
+        // Baseline is important for positioning text on canvas
+        this._baseline = span.offsetTop + span.offsetHeight;
+        line.remove();
+      };
+
+      /**
+       * Returns font family
+       * @return {String}
+       */
+      FontMetrics.prototype.getFamily = function() {
+        return this._family;
+      };
+
+      /**
+       * Returns font family
+       * @return {Number}
+       */
+      FontMetrics.prototype.getSize = function() {
+        return this._size;
+      };
+
+      /**
+       * Returns line height in px
+       * @return {Number}
+       */
+      FontMetrics.prototype.getHeight = function() {
+        return this._height;
+      };
+
+      /**
+       * Returns line height in pxf
+       * @return {Number}
+       */
+      FontMetrics.prototype.getWidth = function() {
+        return this._width;
+      };
+
+      /**
+       * Returns line height in px
+       * @return {Number}
+       */
+      FontMetrics.prototype.getBaseline = function() {
+        return this._baseline;
+      };
+    </script>
+
+    <script>
+      var selection = window.getSelection();
+      var IMEComplete = true;
+      var lastChangeMutation = null;
+      var editorState = {
+        search: false
+      };
+
+      var getOriCursorPos = function(divParent) {
+        let oriCurPos = selection.focusOffset;
+        let oriNode = selection.focusNode;
+        if (oriNode === null) return 0;
+        // TODO: 可能會有問題，因為當游標不在editor呼叫會出問題
+        if (
+          oriNode.parentNode.nodeName === "SPAN" ||
+          oriNode.parentNode.nodeName === "FONT"
+        ) {
+          oriNode = oriNode.parentNode;
+        }
+        //把指定節點前的元素長度都算出來
+        let childNodes = divParent.childNodes;
+        for (let i = 0; i < childNodes.length; i++) {
+          if (childNodes[i] !== oriNode) {
+            oriCurPos += childNodes[i].textContent.length;
+          } else {
+            break;
+          }
+        }
+        return oriCurPos;
+      };
+
+      var restoreCursorPos = function(divParent, oriCurPos) {
+        let range = document.createRange();
+        let children = divParent.childNodes;
+        let remainLeng = oriCurPos;
+        for (let i = 0; i < children.length; i++) {
+          if (remainLeng - children[i].textContent.length <= 0) {
+            let textNode = children[i];
+            if (children[i].nodeName !== "#text") {
+              textNode = children[i].childNodes[0];
+            }
+            range.setStart(textNode, remainLeng);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            remainLeng -= children[i].textContent.length;
+            break;
+          }
+          remainLeng -= children[i].textContent.length;
+        }
+      };
+
+      var matchOne = function(word, arr) {
+        for (let i = 0; i < arr.length; i++) {
+          if (word === arr[i]) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      String.prototype.replaceAll = function(search, replacement) {
+        let target = this;
+        return target.split(search).join(replacement);
+      };
+
+      // 每個tokenList的token為{text:..., startIndex: ..., lineIndex: ...}
+      var getTokenListWithIndexInfo = function(str) {
+        // [\u4e00-\u9fa5]是中文判斷
+        // \"[^\"]*\"? 字串判斷
+        // [0-9]+ 數字判定
+        var re = /\"[^\"]*\"?|[\u4e00-\u9fa5]+|[0-9]+|\w+|\s|\t|./;
+        var found = str.match(re);
+        var tokenList = [];
+        let curIndex = 0;
+        if (found) {
+          tokenList.push({ text: found[0], startIndex: curIndex });
+        }
+        let sIndex = 0;
+        while (found !== null) {
+          sIndex = found.index + found[0].length;
+          curIndex += sIndex;
+          str = str.substr(sIndex, str.length - sIndex);
+          found = str.match(re);
+          if (found) {
+            tokenList.push({ text: found[0], startIndex: curIndex });
+          }
+        }
+        return tokenList;
+      };
+
+      function toNextSearchWord() {
+        curSearchIndex = (curSearchIndex + 1) % decWordInfoList.length;
+
+        let editorHgt = myEditor.getClientRects()[0].height;
+        let editorWid = myEditor.getClientRects()[0].width;
+        myEditor.scrollTop =
+          decWordInfoList[curSearchIndex].lineIndex * lineHgt - editorHgt / 2;
+        myEditor.scrollLeft =
+          decWordInfoList[curSearchIndex].startIndex * chWid - editorWid / 2;
+      }
+
+      function toPreviousSearchWord() {
+        curSearchIndex = curSearchIndex - 1;
+        if (curSearchIndex < 0) {
+          curSearchIndex = decWordInfoList.length - 1;
+        }
+        let editorHgt = myEditor.getClientRects()[0].height;
+        let editorWid = myEditor.getClientRects()[0].width;
+        myEditor.scrollTop =
+          decWordInfoList[curSearchIndex].lineIndex * lineHgt - editorHgt / 2;
+        myEditor.scrollLeft =
+          decWordInfoList[curSearchIndex].startIndex * chWid - editorWid / 2;
+      }
+
+      function closeSearchField() {
+        let searchDom = document.getElementById("search-bar");
+        searchDom.style.display = "none";
+        editorState.search = false;
+        clearWordHighlightArr();
+      }
+
+      var getTokenList = function(str) {
+        // [\u4e00-\u9fa5]是中文判斷
+        // \"[^\"]*\"? 字串判斷
+        // [0-9]+ 數字判定
+        var re = /\"[^\"]*\"?|[\u4e00-\u9fa5]+|[0-9]+|\w+|\s|\t|./;
+        var found = str.match(re);
+        var tokenList = [];
+        if (found) {
+          tokenList.push(found[0]);
+        }
+        let sIndex = 0;
+        while (found !== null) {
+          sIndex = found.index + found[0].length;
+          str = str.substr(sIndex, str.length - sIndex);
+          found = str.match(re);
+          if (found) {
+            tokenList.push(found[0]);
+          }
+        }
+        return tokenList;
+      };
+
+      var generateHTMLByStr = function(str) {
+        let tokenList = getTokenList(str);
+
+        function isNum(str) {
+          if (!isNaN(parseInt(str)) || !isNaN(parseFloat(str))) {
+            return true;
+          }
+          return false;
+        }
+
+        function isString(str) {
+          if (str[0] === '"') {
+            return true;
+          }
+          return false;
+        }
+
+        let generatedHtml = "";
+        // 根據類型給予相對應的class，class給予文字顏色
+        let WordColorInfo = [
+          {
+            name: "instruction",
+            wordArr: [
+              "and",
+              "break",
+              "case",
+              "catch",
+              "continue",
+              "delete",
+              "new",
+              "using",
+              "namespace",
+              "while",
+              "return",
+              "default",
+              "do",
+              "switch",
+              "default",
+              "for"
+            ],
+            className: "instructionWord"
+          },
+          {
+            name: "typeWord",
+            wordArr: [
+              "bool",
+              "char",
+              "const",
+              "double",
+              "enum",
+              "float",
+              "int",
+              "void"
+            ],
+            className: "typeWord"
+          }
+        ];
+        for (let i = 0; i < tokenList.length; i++) {
+          let matchWordInfoIndex = -1;
+          if (isString(tokenList[i])) {
+            generatedHtml += `<span class="stringWord">${tokenList[i]}</span>`;
+          } else if (isNum(tokenList[i])) {
+            generatedHtml += `<span class="numberWord">${tokenList[i]}</span>`;
+          } else {
+            for (let j = 0; j < WordColorInfo.length; j++) {
+              if (matchOne(tokenList[i], WordColorInfo[j].wordArr)) {
+                matchWordInfoIndex = j;
+              }
+            }
+            if (matchWordInfoIndex !== -1) {
+              generatedHtml += `<span class="${WordColorInfo[matchWordInfoIndex].className}">${tokenList[i]}</span>`;
+            } else {
+              // 不在span標籤內
+              // 不知道為甚麼htmlEncode沒有空格和tab
+              // 因為前面用textContent取內容，原本&nbsp;會變成空格字元，所以要設定html的時候，要把空格換成&nbsp;
+              let encodeToken = htmlEncode(tokenList[i]);
+              encodeToken = encodeToken.replaceAll(" ", "&nbsp;");
+              encodeToken = encodeToken.replaceAll("	", "&emsp;");
+              generatedHtml += encodeToken;
+            }
+          }
+        }
+        return generatedHtml;
+      };
+
+      // haha-給redo用，根據行數與文字內容回復
+      var updateByLineIndexAndStr = function(lineIndex, str) {
+        let lineDom = myEditor.children[lineIndex];
+        let generatedHtml = generateHTMLByStr(str);
+        lineDom.innerHTML = generatedHtml;
+        return lineDom;
+      };
+
+      var updateByLineDiv = function(divParent) {
+        let textStr = divParent.textContent;
+        // 產生generateHtml
+        // 用regex切割
+        let str = textStr;
+        let generatedHtml = generateHTMLByStr(str);
+        let oriCurPos = getOriCursorPos(divParent);
+        divParent.innerHTML = generatedHtml;
+        restoreCursorPos(divParent, oriCurPos);
+      };
+
+      var updateAllLine = function(editorDiv) {
+        editorDiv.childNodes.forEach(function(lineDiv) {
+          updateByLineDiv(lineDiv);
+        });
+      };
+
+      let searchInputDom = document.getElementById("search-input-field");
+      searchInputDom.addEventListener(
+        "input",
+        function(e) {
+          clearWordHighlightArr();
+          highlightSpecificWord(searchInputDom.textContent);
+        },
+        false
+      );
+
+      var updateEditor = function(mutation) {
+        lastChangeMutation = mutation;
+        // 按空白鍵，會送出兩次訊號，第二次的parentNode會是null
+        if (mutation.target.parentElement !== null) {
+          let divParent = mutation.target.parentElement;
+          if (mutation.target.parentElement.nodeName === "SPAN") {
+            divParent = mutation.target.parentElement.parentElement;
+          }
+
+          if (divParent !== null && IMEComplete === true) {
+            // 有可能是span
+            if (divParent !== null) {
+              if (divParent.nodeName === "SPAN") {
+                divParent = divParent.parentElement;
+              }
+            }
+            updateByLineDiv(divParent);
+            if (editorState.search === true) {
+              clearWordHighlightArr();
+              highlightSpecificWord(searchInputDom.textContent);
+            }
+          }
+        }
+      };
+
+      var getCurLineDom = function() {
+        let curDivDom = selection.focusNode;
+        if (curDivDom.nodeName !== "DIV") {
+          curDivDom = curDivDom.parentNode;
+          if (curDivDom.nodeName !== "DIV") {
+            curDivDom = curDivDom.parentNode;
+          }
+        }
+        return curDivDom;
+      };
+
+      // 負責觀察文字變化，syntaxlight
+      var mutationObserver = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+          // 因為有樣式的span被刪掉後，在刪除後的游標位置輸入文字，會插入有剛才span樣式的font tag
+          let focNode = selection.focusNode;
+          if (focNode.parentNode.nodeName === "FONT") {
+            let divParent = focNode.parentNode.parentNode;
+            let oriCurPos = getOriCursorPos(divParent);
+            $(focNode).unwrap();
+            restoreCursorPos(divParent, oriCurPos);
+          }
+          updateEditor(mutation);
+        });
+      });
+
+      let observeElement = document.getElementById("my-editor");
+
+      var observeInnerDivChange = function() {
+        mutationObserver.observe(observeElement, {
+          attributes: false,
+          characterData: true,
+          childList: false,
+          subtree: true,
+          attributeOldValue: false,
+          characterDataOldValue: true
+        });
+      };
+      observeInnerDivChange();
+
+      //  負責undo & redo system
+      // TODO: 要將歷史紀錄起來
+      var mutationChildListObserver = new MutationObserver(function(mutations) {
+        // TODO: 之後可能會有增加行的情況
+        // 目前看起來被刪除的div的mutation順序為上到下
+        let removeList = [];
+        let addList = [];
+        let removeDivNum = 0;
+        let addDivNum = 0;
+        mutations.forEach(function(mutation) {
+          if (mutation.removedNodes.length > 0) {
+            // 可能同時有removedNodes和addedNodes
+            if (mutation.removedNodes[0].nodeName === "DIV") {
+              mutation.removedNodes.forEach(function(remoeNode) {
+                removeList.push(remoeNode.textContent);
+                removeDivNum += 1;
+              });
+            }
+          }
+          if (mutation.addedNodes.length > 0) {
+            if (mutation.addedNodes[0].nodeName === "DIV") {
+              mutation.addedNodes.forEach(function(addNode) {
+                addList.push(addNode.textContent);
+                addDivNum += 1;
+              });
+            }
+          }
+        });
+        console.log("removeDivNum", removeDivNum);
+        console.log("addDivNum", addDivNum);
+        console.log("removeList", removeList);
+        console.log("addList", addList);
+        // 如果removeDivNum跟addDivNum相同，那就代表複製的文字有n行，選取的文字也有n行
+        if (removeDivNum > 0 && addDivNum === 0) {
+          let baseLineIndex = getLineIndexByLineDiv(
+            mutations[0].previousSibling
+          );
+          let textAfterChange = mutations[0].previousSibling.textContent;
+          let lastSelectionDivList = lastSelectionDivs.children;
+          if (
+            removeList[removeList.length - 1].textContent !==
+            lastSelectionDivList[lastSelectionDivList.length - 1].textContent
+          ) {
+            removeList[removeList.length - 1] = lastEndContainerText;
+          }
+
+          editHistory.push({
+            type: "mutiline delete",
+            changeLineIndex: baseLineIndex,
+            changeLineText: lastStartContainerText,
+            changeLineTextAfterDelete: textAfterChange,
+            oriCursorPos: getOriCursorPos(mutations[0].previousSibling),
+            removeList: removeList
+          });
+          recordIndex++;
+          editHistory.push({
+            type: "mutiline delete",
+            changeLineIndex: baseLineIndex,
+            changeLineText: lastStartContainerText,
+            changeLineTextAfterDelete: textAfterChange,
+            oriCursorPos: getOriCursorPos(mutations[0].previousSibling),
+            removeList: removeList
+          });
+          recordIndex++;
+          // 要記錄兩次的原因是，將其history為一個狀態，雖然只有一個變化紀錄，但是那個變化代表兩種狀態
+        } else if (addDivNum > 0 && removeDivNum === 0) {
+          // 很詭異的地方就是如果選取一部分的div再貼上，會被判定刪除一個div
+          // 如果再刪div的時候，如果最後選取的div是一部分，不會被判定成刪除一個div
+          let baseLineIndex = getLineIndexByLineDiv(
+            mutations[0].previousSibling
+          );
+          let textAfterChange = mutations[0].previousSibling.textContent;
+          let lastSelectionDivList = lastSelectionDivs.children;
+          if (lastSelectionDivList.length > 0) {
+            if (
+              addList[addList.length - 1].textContent !==
+              lastSelectionDivList[lastSelectionDivList.length - 1].textContent
+            ) {
+              addList[addList.length - 1] = lastEndContainerText;
+            }
+          }
+
+          editHistory.push({
+            type: "mutiline add",
+            changeLineIndex: baseLineIndex,
+            changeLineText: lastStartContainerText,
+            changeLineTextAfterAdd: textAfterChange,
+            oriCursorPos: getOriCursorPos(mutations[0].previousSibling),
+            addList: addList
+          });
+          recordIndex++;
+          editHistory.push({
+            type: "mutiline add",
+            changeLineIndex: baseLineIndex,
+            changeLineText: lastStartContainerText,
+            changeLineTextAfterAdd: textAfterChange,
+            oriCursorPos: getOriCursorPos(mutations[0].previousSibling),
+            addList: addList
+          });
+          recordIndex++;
+        } else if (addDivNum === removeDivNum) {
+          // 如果是同一行的取代，由監聽單個div的負責
+          if (lastStartContainer === lastEndContainer) {
+            return;
+          }
+          // 先把原本每行的內容印出來，再把更改後的每行資料印出來
+          // removeList中沒有文字內容的就是沒有把整行刪除的div,而且選取的第一個div和最後一個div都是在removeList的最後兩個
+          let baseLineIndex = getLineIndexByLineDiv(lastStartContainer);
+
+          removeList.splice(removeList.length - 2, 2);
+          let oriList = [];
+          let afterList = [];
+          // let curDiv = lastStartContainer; // 可能是空的!!!!!!!
+          let curDiv = myEditor.children[lastStartLineIndex];
+          for (let i = lastStartLineIndex; i <= lastEndLineIndex; i++) {
+            afterList.push(curDiv.textContent);
+            curDiv = curDiv.nextSibling;
+          }
+          afterList.push(curDiv.textContent);
+          oriList.push(lastStartContainerText);
+          Array.prototype.push.apply(oriList, removeList);
+          oriList.push(lastEndContainerText);
+          editHistory.push({
+            type: "mutiline replace",
+            changeLineIndex: lastStartLineIndex,
+            oriList: oriList,
+            oriCursorPos: getOriCursorPos(mutations[0].previousSibling)
+          });
+          recordIndex++;
+          editHistory.push({
+            type: "mutiline replace",
+            changeLineIndex: lastStartLineIndex,
+            oriList: afterList,
+            oriCursorPos: getOriCursorPos(mutations[0].previousSibling)
+          });
+          recordIndex++;
+        } else if (addDivNum > 0) {
+          // 只要知道從哪一行開始，再知道有加幾個div就可以
+          let baseLineIndex = getLineIndexByLineDiv(lastStartContainer);
+
+          removeList.splice(removeList.length - 2, 2);
+          let oriList = [];
+          let afterList = [];
+          let curDiv = myEditor.children[lastStartLineIndex];
+          for (
+            let i = lastStartLineIndex;
+            i <= lastStartLineIndex + addList.length;
+            i++
+          ) {
+            afterList.push(curDiv.textContent);
+            curDiv = curDiv.nextSibling;
+          }
+          afterList.push(curDiv.textContent);
+          // 要判定選取的開始和結束容器是不是同一行
+          oriList.push(lastStartContainerText);
+          if (lastStartContainer !== lastEndContainer) {
+            oriList.push(lastEndContainerText);
+          }
+          Array.prototype.push.apply(oriList, removeList);
+          let addNum = afterList.length - oriList.length;
+          if (lastStartContainer === lastEndContainer) {
+            addNum -= 2;
+          }
+          if (decreaseAddNumTF) {
+            decreaseAddNumTF = false;
+            addNum -= 1; // 如果在一行的中間貼上，會被判定remove兩次，並且多加一次div，游標在的那一行要移要加
+          }
+          editHistory.push({
+            type: "mutiline replace and increase div",
+            changeLineIndex: lastStartLineIndex,
+            oriList: oriList,
+            addNum: addNum,
+            oriCursorPos: getOriCursorPos(mutations[0].previousSibling)
+          });
+          recordIndex++;
+          editHistory.push({
+            type: "mutiline replace and increase div",
+            changeLineIndex: lastStartLineIndex,
+            oriList: afterList,
+            addNum: addNum,
+            oriCursorPos: getOriCursorPos(mutations[0].previousSibling)
+          });
+          recordIndex++;
+        } else if (removeDivNum > 0) {
+          console.log("removeDivNum > 0");
+        }
+      });
+
+      var observeDivChange = function() {
+        mutationChildListObserver.observe(observeElement, {
+          attributes: false,
+          characterData: false,
+          childList: true,
+          subtree: false,
+          attributeOldValue: false,
+          characterDataOldValue: false
+        });
+      };
+      observeDivChange();
+
+      let myEditor = document.getElementById("my-editor");
+      myEditor.addEventListener("compositionend", event => {
+        IMEComplete = true;
+        updateEditor(lastChangeMutation);
+      });
+      myEditor.addEventListener("compositionstart", event => {
+        IMEComplete = false;
+      });
+
+      var editHistory = [];
+      var recordIndex = -1;
+      var lastFocusDivText = "";
+      var lastFocusDivCursorPos = 0;
+      var lastFocusDivLineIndex = 0;
+      var lastSelectDivNum = 0;
+      var lastSelectionDivs = null;
+      var lastStartContainerText = null;
+      var lastEndContainerText = null;
+      var lastStartContainer = null;
+      var lastEndContainer = null;
+      var lastStartLineIndex = -1;
+      var lastEndLineIndex = -1;
+      var decreaseAddNumTF = false;
+
+      var getSelectDivNum = function() {
+        let selectChildren = selection.getRangeAt(0).cloneContents().children;
+
+        let divNum = 0;
+        for (let i = 0; i < selectChildren.length; i++) {
+          if (selectChildren[i].nodeName === "DIV") {
+            divNum++;
+          }
+        }
+        return divNum;
+      };
+
+      myEditor.addEventListener("input", event => {
+        // 監聽事件，為了歷史紀錄，undo & redo
+        let curDivDom = getCurLineDom();
+        // 把recordIndex以後的都刪掉
+        editHistory.splice(
+          recordIndex + 1,
+          editHistory.length - recordIndex - 1
+        );
+        // 如果選取的div數量超過一個就不加入歷史，這種判斷方式有缺陷
+
+        if (
+          lastSelectDivNum < 1 &&
+          lastFocusDivLineIndex === getCursorLineIndex()
+        ) {
+          if (recordIndex === -1) {
+            editHistory.push({
+              type: "one line text change",
+              lineIndex: getCursorLineIndex(),
+              text: lastFocusDivText,
+              oriCursorPos: lastFocusDivCursorPos
+            });
+            recordIndex++;
+          } else if (
+            editHistory[recordIndex].lineIndex !== lastFocusDivLineIndex
+          ) {
+            editHistory.push({
+              type: "one line text change",
+              lineIndex: getCursorLineIndex(),
+              text: lastFocusDivText,
+              oriCursorPos: lastFocusDivCursorPos
+            });
+            recordIndex++;
+          }
+          editHistory.push({
+            type: "one line text change",
+            lineIndex: getCursorLineIndex(),
+            text: curDivDom.textContent,
+            oriCursorPos: getOriCursorPos(curDivDom)
+          });
+          recordIndex++;
+        } else {
+          // TODO: handle or not?
+        }
+      });
+      myEditor.addEventListener("keydown", event => {
+        if (event.keyCode === 9) {
+          event.preventDefault();
+          document.execCommand("insertHTML", false, "&nbsp;&nbsp;&nbsp;&nbsp;");
+          updateEditor(lastChangeMutation);
+        } else if (event.ctrlKey && event.keyCode === 90) {
+          // keycode 90 - Z
+          // TODO: haha-回復上移動
+          // ! 在插入div時要關掉mutation observer
+          mutationChildListObserver.disconnect();
+          event.preventDefault();
+          if (editHistory.length > 0 && recordIndex > 0) {
+            if (editHistory[recordIndex].type === "one line text change") {
+              recordIndex--;
+              let lastRecord = editHistory[recordIndex];
+              let lineDom = updateByLineIndexAndStr(
+                lastRecord.lineIndex,
+                lastRecord.text
+              );
+              restoreCursorPos(lineDom, lastRecord.oriCursorPos);
+            } else if (editHistory[recordIndex].type === "mutiline delete") {
+              recordIndex--;
+              let lastRecord = editHistory[recordIndex];
+              let lineDom = updateByLineIndexAndStr(
+                lastRecord.changeLineIndex,
+                lastRecord.changeLineText
+              );
+              let baseLineDom = myEditor.children[lastRecord.changeLineIndex];
+
+              for (let i = lastRecord.removeList.length - 1; i > -1; i--) {
+                const text = lastRecord.removeList[i];
+                let divDom = document.createElement("div");
+                divDom.appendChild(document.createTextNode(text));
+                baseLineDom.insertAdjacentElement("afterend", divDom);
+                updateByLineDiv(divDom);
+              }
+            } else if (editHistory[recordIndex].type === "mutiline add") {
+              recordIndex--;
+              let lastRecord = editHistory[recordIndex];
+              let lineDom = updateByLineIndexAndStr(
+                lastRecord.changeLineIndex,
+                lastRecord.changeLineText
+              );
+              for (let i = 0; i < lastRecord.addList.length; i++) {
+                lineDom.nextSibling.remove();
+              }
+            } else if (editHistory[recordIndex].type === "mutiline replace") {
+              recordIndex--;
+              let changeLineNum = editHistory[recordIndex].oriList.length;
+              let startLineIndex = editHistory[recordIndex].changeLineIndex;
+              for (
+                let i = startLineIndex, j = 0;
+                i < startLineIndex + changeLineNum;
+                i++, j++
+              ) {
+                updateByLineIndexAndStr(i, editHistory[recordIndex].oriList[j]);
+              }
+            } else if (
+              editHistory[recordIndex].type ===
+              "mutiline replace and increase div"
+            ) {
+              recordIndex--;
+              let changeLineNum = editHistory[recordIndex].oriList.length;
+              let startLineIndex = editHistory[recordIndex].changeLineIndex;
+              let lastDiv = null;
+              for (
+                let i = startLineIndex, j = 0;
+                i < startLineIndex + changeLineNum;
+                i++, j++
+              ) {
+                lastDiv = updateByLineIndexAndStr(
+                  i,
+                  editHistory[recordIndex].oriList[j]
+                );
+              }
+              for (let i = 0; i < editHistory[recordIndex].addNum; i++) {
+                lastDiv.nextSibling.remove();
+              }
+            }
+          }
+          observeDivChange(); // ! 恢復mutation observer
+        } else if (event.ctrlKey && event.keyCode === 89) {
+          // keycode 89 - Y
+          event.preventDefault();
+          if (editHistory.length - 1 > recordIndex) {
+            // ! 在插入div時要關掉mutation observer
+            mutationChildListObserver.disconnect();
+            if (editHistory[recordIndex].type === "one line text change") {
+              recordIndex++;
+              let lastRecord = editHistory[recordIndex];
+              let lineDom = updateByLineIndexAndStr(
+                lastRecord.lineIndex,
+                lastRecord.text
+              );
+              restoreCursorPos(lineDom, lastRecord.oriCursorPos);
+            } else if (editHistory[recordIndex].type === "mutiline delete") {
+              recordIndex++;
+              let lastRecord = editHistory[recordIndex];
+              let lineDom = updateByLineIndexAndStr(
+                lastRecord.changeLineIndex,
+                lastRecord.changeLineTextAfterDelete
+              );
+              restoreCursorPos(lineDom, lastRecord.oriCursorPos);
+              for (let i = 0; i < lastRecord.removeList.length; i++) {
+                lineDom.nextSibling.remove();
+              }
+            } else if (editHistory[recordIndex].type === "mutiline add") {
+              recordIndex++;
+              let lastRecord = editHistory[recordIndex];
+              let lineDom = updateByLineIndexAndStr(
+                lastRecord.changeLineIndex,
+                lastRecord.changeLineTextAfterAdd
+              );
+              let baseLineDom = myEditor.children[lastRecord.changeLineIndex];
+
+              for (let i = 0; i < lastRecord.addList.length; i++) {
+                const text = lastRecord.addList[i];
+                let divDom = document.createElement("div");
+                divDom.appendChild(document.createTextNode(text));
+                baseLineDom.insertAdjacentElement("afterend", divDom);
+                updateByLineDiv(divDom);
+              }
+              restoreCursorPos(lineDom, lastRecord.oriCursorPos);
+            } else if (editHistory[recordIndex].type === "mutiline replace") {
+              recordIndex++;
+              let changeLineNum = editHistory[recordIndex].oriList.length;
+              let startLineIndex = editHistory[recordIndex].changeLineIndex;
+              for (
+                let i = startLineIndex, j = 0;
+                i < startLineIndex + changeLineNum;
+                i++, j++
+              ) {
+                updateByLineIndexAndStr(i, editHistory[recordIndex].oriList[j]);
+              }
+            }
+            // TODO: need to implement multiline type
+            observeDivChange(); // ! 恢復mutation observer
+          }
+        } else {
+          let curDivDom = getCurLineDom();
+          lastFocusDivText = curDivDom.textContent;
+          lastFocusDivCursorPos = getOriCursorPos(curDivDom);
+          lastFocusDivLineIndex = getCursorLineIndex();
+          lastSelectDivNum = getSelectDivNum();
+          lastSelectionDivs = selection.getRangeAt(0).cloneContents();
+          lastStartContainer = selection.getRangeAt(0).startContainer;
+          if (lastStartContainer.nodeName !== "DIV") {
+            lastStartContainer = lastStartContainer.parentNode;
+            if (lastStartContainer.nodeName !== "DIV") {
+              lastStartContainer = lastStartContainer.parentNode;
+            }
+          }
+          lastEndContainer = selection.getRangeAt(0).endContainer;
+          if (lastEndContainer.nodeName !== "DIV") {
+            lastEndContainer = lastEndContainer.parentNode;
+            if (lastEndContainer.nodeName !== "DIV") {
+              lastEndContainer = lastEndContainer.parentNode;
+            }
+          }
+          lastStartContainerText = lastStartContainer.textContent;
+          lastEndContainerText = lastEndContainer.textContent;
+
+          lastStartLineIndex = getLineIndexByLineDiv(lastStartContainer);
+          lastEndLineIndex = getLineIndexByLineDiv(lastEndContainer);
+          // TODO: 神秘的解法
+          // TODO: 多行的情況會有問題
+          let selectionText = selection.getRangeAt(0).cloneContents()
+            .textContent;
+          let editOffset = selectionText.length;
+          lastFocusDivCursorPos += editOffset;
+        }
+      });
+      // 覆寫原本的貼上，因為原本的貼上會有HTML
+      myEditor.addEventListener("paste", event => {
+        event.preventDefault();
+        let text = event.clipboardData.getData("text/plain");
+        let editor = document.getElementById("my-editor");
+        // 要有換行
+        // 一行以上才要
+        // 把空格和tab轉成html碼
+        // 記住replace只會取代一個
+
+        // text = text.replaceAll(" ", "&nbsp;");
+        // text = text.replaceAll("   ", "&emsp;"); // &emsp; 是四個空格的tab，&ensp;是兩個空格的tab
+        let divArr = text.split("\n");
+        let selectionNode = selection.getRangeAt(0).cloneContents().children;
+        let selectDivNum = 0;
+        for (let i = 0; i < selectionNode.length; i++) {
+          if (selectionNode[i].nodeName === "DIV") {
+            selectDivNum += 1;
+          }
+        }
+        if (selection.toString().length === 0) {
+          // TODO: 文字游標的位置可能不在一行的最後面，可能在中間，所以不能直接把要貼上的第一行文字直接加在文字游標那一行的最後面
+          console.log("!!!!!!haha!!!!!!!!");
+          let curDivDom = getCurLineDom();
+          let lastCursorPos = getOriCursorPos(curDivDom);
+          let oriCurLineText = curDivDom.textContent;
+          lastFocusDivText = curDivDom.textContent;
+          lastFocusDivCursorPos = getOriCursorPos(curDivDom);
+          lastFocusDivLineIndex = getCursorLineIndex();
+          lastSelectDivNum = getSelectDivNum();
+          lastSelectionDivs = selection.getRangeAt(0).cloneContents();
+          lastStartContainer = selection.getRangeAt(0).startContainer;
+          if (lastStartContainer.nodeName !== "DIV") {
+            lastStartContainer = lastStartContainer.parentNode;
+            if (lastStartContainer.nodeName !== "DIV") {
+              lastStartContainer = lastStartContainer.parentNode;
+            }
+          }
+          lastEndContainer = selection.getRangeAt(0).endContainer;
+          if (lastEndContainer.nodeName !== "DIV") {
+            lastEndContainer = lastEndContainer.parentNode;
+            if (lastEndContainer.nodeName !== "DIV") {
+              lastEndContainer = lastEndContainer.parentNode;
+            }
+          }
+          lastStartContainerText = lastStartContainer.textContent;
+          lastEndContainerText = lastEndContainer.textContent;
+
+          lastStartLineIndex = getLineIndexByLineDiv(lastStartContainer);
+          lastEndLineIndex = getLineIndexByLineDiv(lastEndContainer);
+          if (divArr.length === 1) {
+            // 紀錄編輯歷史
+            let afterEditCursorPos = lastCursorPos + divArr[0].length;
+            editHistory.push({
+              type: "one line text change",
+              lineIndex: getCursorLineIndex(),
+              text: oriCurLineText,
+              oriCursorPos: lastCursorPos
+            });
+            recordIndex++;
+            editHistory.push({
+              type: "one line text change",
+              lineIndex: getCursorLineIndex(),
+              text: curDivDom.textContent,
+              oriCursorPos: afterEditCursorPos
+            });
+            recordIndex++;
+          } else {
+            let generatedHtml = "";
+            for (let i = 0; i < divArr.length; i++) {
+              let encodeDivContent = htmlEncode(divArr[i]);
+              generatedHtml += `<div>${encodeDivContent}</div>`;
+            }
+            // 如果貼上時在那行的尾端就不用減addnum
+            if (lastCursorPos === oriCurLineText.length) {
+              decreaseAddNumTF = true;
+            }
+            document.execCommand("insertHTML", false, generatedHtml);
+          }
+        } else {
+          // 可能會有兩種情況，一種是在最後添加文字，如果有多個div就換行
+          //
+          let generatedHtml = "";
+          for (let i = 0; i < divArr.length; i++) {
+            let encodeDivContent = htmlEncode(divArr[i]);
+            generatedHtml += `<div>${encodeDivContent}</div>`;
+          }
+          let selectChildren = selection.getRangeAt(0).cloneContents().children;
+          if (selectChildren.length === 0) {
+            // 選取的範圍落在同一行
+            document.execCommand("delete", false);
+            editHistory.splice(editHistory.length - 2, 2);
+            recordIndex -= 2;
+          }
+
+          // 要處理一下有時候會多出來的edithistory
+          document.execCommand("insertHTML", false, generatedHtml);
+          if (
+            selection.focusNode.parentNode.nodeName === "DIV" &&
+            selection.focusNode.parentNode.parentNode.nodeName === "DIV" &&
+            selection.focusNode.parentNode.parentNode.id !== "my-editor"
+          ) {
+            $(selection.focusNode.parentNode).unwrap();
+          }
+        }
+      });
+
+      var getLineHgt = function() {
+        let tempDiv = document.createElement("div");
+        let tempDivDOM = myEditor.appendChild(tempDiv);
+        let tempSpan = document.createElement("span");
+        let tempSpanDOM = tempDiv.appendChild(tempSpan);
+        let divHgt = tempDivDOM.getClientRects()[0].height;
+        tempSpanDOM.appendChild(document.createTextNode("haha"));
+        tempDivDOM.remove();
+        return divHgt;
+      };
+
+      // 裝飾word的div，裝飾背景
+      let decWordDivList = [];
+      let decWordInfoList = [];
+      let myFontMetric = new FontMetrics("Courier New", 15);
+      let chWid = myFontMetric.getWidth();
+      let editorOverlay = document.getElementById("overlay-editor-layer");
+
+      // 在css設定line-height
+      let lineHgt = getLineHgt();
+      // 在css設定的line-height不見得就是實際上的line-hight，會有誤差
+
+      var getLineIndexByLineDiv = function(lineDiv) {
+        let linesDom = myEditor.children;
+        if (lineDiv.nodeName !== "DIV") {
+          lineDiv = lineDiv.parentNode;
+          if (lineDiv.nodeName !== "DIV") {
+            lineDiv = lineDiv.parentNode;
+          }
+        }
+        let index = -1;
+        for (let i = 0; i < linesDom.length; i++) {
+          if (linesDom[i] === lineDiv) {
+            index = i;
+            break;
+          }
+        }
+        return index;
+      };
+
+      var getCursorLineIndex = function() {
+        let curLineDiv = selection.focusNode;
+        return getLineIndexByLineDiv(curLineDiv);
+      };
+
+      var clearWordHighlightArr = function() {
+        for (let i = 0; i < decWordDivList.length; i++) {
+          decWordDivList[i].remove();
+        }
+        decWordDivList.splice(0, decWordDivList.length);
+        decWordInfoList.splice(0, decWordInfoList.length);
+        curSearchIndex = 0;
+      };
+
+      var getLineNumFieldWid = function() {
+        let tempDiv = document.createElement("div");
+        let tempDivDOM = myEditor.appendChild(tempDiv);
+        let lineDivLeft = tempDivDOM.getClientRects()[0].left;
+        let tempSpan = document.createElement("span");
+        let tempSpanDOM = tempDiv.appendChild(tempSpan);
+        let spanLeft = tempSpanDOM.getClientRects()[0].left;
+        tempDivDOM.remove();
+        return spanLeft - lineDivLeft;
+      };
+      
+      // 得到左邊數字欄位的寬度
+      var lineNumFieldWid = getLineNumFieldWid();
+      // 目前搜尋移動到的詞彙索引
+      var curSearchIndex = 0;
+
+      var highlightSpecificWord = function(matchWord) {
+        let lines = myEditor.textContent.split("\n");
+        let linesDom = myEditor.children;
+
+        let scrollTop = myEditor.scrollTop;
+        let scrollLeft = myEditor.scrollLeft;
+
+        // 目前先做按下ctrl+F時游標在的那一個字會有半透明背景
+        // 單行
+        for (let lineIndex = 0; lineIndex < linesDom.length; lineIndex++) {
+          let complexTokenList = getTokenListWithIndexInfo(
+            linesDom[lineIndex].textContent
+          );
+          let curCursorLineIndex = getCursorLineIndex();
+          let matchWordNum = 0;
+          for (let i = 0; i < complexTokenList.length; i++) {
+            if (complexTokenList[i].text == matchWord) {
+              if (i >= curCursorLineIndex) {
+                curSearchIndex = matchWordNum;
+              }
+              matchWordNum++;
+              let decWordDiv = document.createElement("div");
+              decWordDiv.style.height = lineHgt + "px";
+              decWordDiv.style.background = "#2c7ad994";
+              let top = lineIndex * lineHgt;
+              // TODO: 要計算有多少個tab
+              let left =
+                complexTokenList[i].startIndex * chWid + lineNumFieldWid;
+              decWordInfoList.push({
+                top: top,
+                left: left,
+                lineIndex: lineIndex,
+                startIndex: complexTokenList[i].startIndex
+              });
+              let wid = complexTokenList[i].text.length * chWid;
+              decWordDiv.style.top = top - scrollTop + "px";
+              decWordDiv.style.left = left - scrollLeft + "px";
+              decWordDiv.style.width = wid + "px";
+              decWordDivList.push(decWordDiv);
+              editorOverlay.appendChild(decWordDiv);
+            }
+          }
+        }
+      };
+
+      myEditor.addEventListener("keydown", event => {
+        if (event.keyCode == 70 && event.ctrlKey) {
+          // ctrl+F
+          if (editorState.search === false) {
+            let searchDom = document.getElementById("search-bar");
+            searchDom.style.display = "block";
+            event.preventDefault(); // 取消原本會觸發的動作，像是google瀏覽器會開啟搜尋欄
+            highlightSpecificWord(searchInputDom.textContent);
+            editorState.search = true;
+          }
+        }
+      });
+
+      let decDivNodeList = [];
+      let decDivNodeTopList = [];
+      // 用來設定哪幾行要highlight
+      let highlightIndexs = [1, 5, 10, 20, 49];
+
+      for (let i = 0; i < highlightIndexs.length; i++) {
+        let decDivNode = document.createElement("div");
+        let divNodeTop = lineHgt * highlightIndexs[i];
+        let scrollTop = myEditor.scrollTop;
+        decDivNodeTopList.push(divNodeTop);
+        decDivNodeList.push(decDivNode);
+        decDivNodeList[i].style.top = decDivNodeTopList[i] - scrollTop + "px";
+        decDivNode.style.height = lineHgt + "px";
+        editorOverlay.appendChild(decDivNode);
+      }
+
+      myEditor.addEventListener("scroll", function(e) {
+        // 在畫面外的元素不更新dom
+        // 更新line highlight
+        for (let i = 0; i < highlightIndexs.length; i++) {
+          let desTop = decDivNodeTopList[i] - e.srcElement.scrollTop;
+          decDivNodeList[i].style.top = desTop + "px";
+        }
+
+        // 更新word highlight
+        for (let i = 0; i < decWordDivList.length; i++) {
+          decWordDivList[i].style.top =
+            decWordInfoList[i].top - e.srcElement.scrollTop + "px";
+          decWordDivList[i].style.left =
+            decWordInfoList[i].left - e.srcElement.scrollLeft + "px";
+        }
+      });
+
+      let sourceCode = `#include <deque>
+#include <algorithm>
+#include <time.h>
+#include <sys/stat.h>
+#include "Buffer.h"
+#include "Scintilla.h"
+#include "Parameters.h"
+#include "Notepad_plus.h"
+#include "ScintillaEditView.h"
+#include "EncodingMapper.h"
+#include "uchardet.h"
+
+static const int blockSize = 128 * 1024 + 4;
+static const int CR = 0x0D;
+static const int LF = 0x0A;
+
+long Buffer::_recentTagCtr = 0;
+
+namespace // anonymous
+{
+	static EolType getEOLFormatForm(const char* const data, size_t length, EolType defvalue = EolType::osdefault)
+	{
+		assert(length == 0 or data != nullptr && "invalid buffer for getEOLFormatForm()");
+
+		for (size_t i = 0; i != length; ++i)
+		{
+			if (data[i] == CR)
+			{
+				if (i + 1 < length && data[i + 1] == LF)
+					return EolType::windows;
+
+				return EolType::macos;
+			}
+
+			if (data[i] == LF)
+				return EolType::unix;
+		}
+
+		return defvalue; // fallback unknown
+	}
+
+} // anonymous namespace
+
+
+Buffer::Buffer(FileManager * pManager, BufferID id, Document doc, DocFileStatus type, const TCHAR *fileName)
+	// type must be either DOC_REGULAR or DOC_UNNAMED
+	: _pManager(pManager) , _id(id), _doc(doc), _lang(L_TEXT)
+{
+	NppParameters& nppParamInst = NppParameters::getInstance();
+	const NewDocDefaultSettings& ndds = (nppParamInst.getNppGUI()).getNewDocDefaultSettings();
+
+	_eolFormat = ndds._format;
+	_unicodeMode = ndds._unicodeMode;
+	_encoding = ndds._codepage;
+	if (_encoding != -1)
+		_unicodeMode = uniCookie;
+
+	_currentStatus = type;
+
+	setFileName(fileName, ndds._lang);
+	updateTimeStamp();
+	checkFileState();
+
+	// reset after initialization
+	_isDirty   = false;
+	_canNotify = true;
+	_needLexer = false; // new buffers do not need lexing, Scintilla takes care of that
+}
+
+
+void Buffer::doNotify(int mask)
+{
+	if (_canNotify)
+	{
+		assert(_pManager != nullptr);
+		_pManager->beNotifiedOfBufferChange(this, mask);
+	}
+}
+
+
+void Buffer::setDirty(bool dirty)
+{
+	_isDirty = dirty;
+	doNotify(BufferChangeDirty);
+}
+
+
+void Buffer::setEncoding(int encoding)
+{
+	_encoding = encoding;
+	doNotify(BufferChangeUnicode | BufferChangeDirty);
+}
+
+
+void Buffer::setUnicodeMode(UniMode mode)
+{
+	_unicodeMode = mode;
+	doNotify(BufferChangeUnicode | BufferChangeDirty);
+}
+
+
+void Buffer::setLangType(LangType lang, const TCHAR* userLangName)
+{
+	if (lang == _lang && lang != L_USER)
+		return;
+
+	_lang = lang;
+	if (_lang == L_USER)
+		_userLangExt = userLangName;
+
+	_needLexer = true;	//change of lang means lexern needs updating
+	doNotify(BufferChangeLanguage|BufferChangeLexing);
+}
+
+
+void Buffer::updateTimeStamp()
+{
+	FILETIME timeStamp = {};
+	WIN32_FILE_ATTRIBUTE_DATA attributes;
+	if (GetFileAttributesEx(_fullPathName.c_str(), GetFileExInfoStandard, &attributes) != 0)
+	{
+		timeStamp = attributes.ftLastWriteTime;
+	}
+
+	if (CompareFileTime(&_timeStamp, &timeStamp) != 0)
+	{
+		_timeStamp = timeStamp;
+		doNotify(BufferChangeTimestamp);
+	}
+}`;
+
+      String.prototype.replaceAll = function(search, replacement) {
+        var target = this;
+        return target.replace(new RegExp(search, "g"), replacement);
+      };
+      let sourceCodeLines = sourceCode.split("\n");
+      mutationChildListObserver.disconnect();
+      for (let i = 0; i < sourceCodeLines.length; i++) {
+        // TODO: 先tab to space，之後再處理計算tab寬度的問題，search highlight
+        sourceCodeLines[i] = sourceCodeLines[i].replaceAll("\t", "    ");
+        let lineDiv = document.createElement("div");
+        if (sourceCodeLines[i] === "") {
+          lineDiv.appendChild(document.createElement("br"));
+          // TODO: 沒有用，可能是後面更新的時候覆寫到
+        } else {
+          lineDiv.appendChild(document.createTextNode(sourceCodeLines[i]));
+        }
+        myEditor.appendChild(lineDiv);
+      }
+      let editor = document.getElementById("my-editor");
+      updateAllLine(editor);
+      observeDivChange();
+    </script>
+  </body>
+</html>
